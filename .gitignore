@@ -1,0 +1,20 @@
+# binaries
+/proxier
+/proxier.exe
+/dist/
+/bin/
+/build/
+.task/
+
+# local data (database, certificates, setup token)
+/data/
+
+# web
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store

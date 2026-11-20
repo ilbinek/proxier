@@ -1,0 +1,225 @@
+# Task runner for proxier — https://taskfile.dev
+#
+#   task                 list all tasks
+#   task run             build the UI + binary for this machine and start it on 127.0.0.1:8080
+#   task build:linux     cross-compile for Linux (amd64, arm64, armv7) into bin/
+#   task build:all       Linux + Windows + macOS
+#
+# Works the same on Linux, macOS and Windows (Task runs commands through its
+# own built-in POSIX shell, so no make/bash is needed on Windows).
+version: "3"
+
+vars:
+  BIN: proxier
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  LDFLAGS: -s -w -X main.version={{.VERSION}}
+  OUT_DIR: bin
+  # Targets for build:all. Format: os/arch (arm means ARMv7).
+  LINUX_TARGETS: linux/amd64 linux/arm64 linux/arm
+  WINDOWS_TARGETS: windows/amd64 windows/arm64
+  DARWIN_TARGETS: darwin/amd64 darwin/arm64
+  DEV_LISTEN: 127.0.0.1:8080
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------- web UI
+
+  web:install:
+    desc: Install frontend dependencies (pnpm)
+    dir: web
+    sources:
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+    generates:
+      - node_modules/.modules.yaml
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  web:build:
+    desc: Build the React UI into web/dist (embedded into the binary)
+    deps: [web:install]
+    dir: web
+    sources:
+      - src/**/*
+      - public/**/*
+      - index.html
+      - package.json
+      - pnpm-lock.yaml
+      - vite.config.ts
+      - tsconfig*.json
+      - components.json
+    generates:
+      - dist/index.html
+    cmds:
+      - pnpm build
+
+  # ---------------------------------------------------------------- build
+
+  build:
+    desc: Build proxier for this machine (./proxier or ./proxier.exe)
+    deps: [web:build]
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BIN}}{{exeExt}} ./cmd/proxier
+      - echo "built ./{{.BIN}}{{exeExt}} ({{.VERSION}})"
+
+  build:linux:
+    desc: Cross-compile for Linux (amd64, arm64, armv7) into bin/
+    deps: [web:build]
+    cmds:
+      - for: { var: LINUX_TARGETS }
+        task: build:target
+        vars: { TARGET: "{{.ITEM}}" }
+
+  build:windows:
+    desc: Cross-compile for Windows (amd64, arm64) into bin/
+    deps: [web:build]
+    cmds:
+      - for: { var: WINDOWS_TARGETS }
+        task: build:target
+        vars: { TARGET: "{{.ITEM}}" }
+
+  build:darwin:
+    desc: Cross-compile for macOS (amd64, arm64) into bin/
+    deps: [web:build]
+    cmds:
+      - for: { var: DARWIN_TARGETS }
+        task: build:target
+        vars: { TARGET: "{{.ITEM}}" }
+
+  build:all:
+    desc: Cross-compile for Linux, Windows and macOS into bin/
+    deps: [web:build]
+    cmds:
+      - task: build:linux
+      - task: build:windows
+      - task: build:darwin
+
+  build:target:
+    desc: "Build one target into bin/, e.g. task build:target TARGET=linux/riscv64"
+    requires:
+      vars: [TARGET]
+    vars:
+      GOOS: '{{index (splitList "/" .TARGET) 0}}'
+      GOARCH: '{{index (splitList "/" .TARGET) 1}}'
+      SUFFIX: '{{if eq .GOARCH "arm"}}v7{{end}}{{if eq .GOOS "windows"}}.exe{{end}}'
+      OUT: "{{.OUT_DIR}}/{{.BIN}}_{{.GOOS}}_{{.GOARCH}}{{.SUFFIX}}"
+    env:
+      GOOS: "{{.GOOS}}"
+      GOARCH: "{{.GOARCH}}"
+      GOARM: "7"
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} ./cmd/proxier
+      - echo "built {{.OUT}}"
+
+  # ---------------------------------------------------------------- run / dev
+
+  run:
+    desc: Build and run proxier locally (data in ./data). Extra flags after --, e.g. task run -- --tls self-signed
+    deps: [build]
+    cmds:
+      - ./{{.BIN}}{{exeExt}} serve --data-dir ./data --listen {{.DEV_LISTEN}} {{.CLI_ARGS}}
+
+  dev:
+    desc: Go API on :8080 + Vite dev server with hot reload on http://localhost:5173
+    deps: [dev:api, dev:web]
+
+  dev:api:
+    desc: Run only the Go server from source (debug logging)
+    cmds:
+      - go run ./cmd/proxier serve --data-dir ./data --listen {{.DEV_LISTEN}} --log-level debug {{.CLI_ARGS}}
+
+  dev:web:
+    desc: Run only the Vite dev server (proxies /api to the Go server)
+    deps: [web:install]
+    dir: web
+    cmds:
+      - pnpm dev
+
+  # ---------------------------------------------------------------- quality
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run Go tests with the race detector (needs a C compiler)
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: go vet, gofmt check, TypeScript typecheck and ESLint
+    deps: [web:install]
+    cmds:
+      - go vet ./...
+      - |
+        unformatted="$(gofmt -l cmd internal web/embed.go)"
+        if [ -n "$unformatted" ]; then
+          echo "These files need gofmt (run: task fmt):"
+          echo "$unformatted"
+          exit 1
+        fi
+      - pnpm --dir web typecheck
+      - pnpm --dir web lint
+
+  fmt:
+    desc: Format Go code
+    cmds:
+      - gofmt -w cmd internal web/embed.go
+
+  check:
+    desc: Everything CI checks (lint + tests)
+    cmds:
+      - task: lint
+      - task: test
+
+  # ---------------------------------------------------------------- release / packaging
+
+  docker:
+    desc: Build the Docker image proxier:<version>
+    cmds:
+      - docker build --build-arg VERSION={{.VERSION}} -t proxier:{{.VERSION}} -t proxier:latest .
+
+  release:snapshot:
+    desc: Build release archives locally with GoReleaser (no publishing) into dist/
+    preconditions:
+      - sh: goreleaser --version
+        msg: "goreleaser not found: https://goreleaser.com/install/"
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:check:
+    desc: Validate .goreleaser.yaml
+    preconditions:
+      - sh: goreleaser --version
+        msg: "goreleaser not found: https://goreleaser.com/install/"
+    cmds:
+      - goreleaser check
+
+  unit:
+    desc: Regenerate deploy/proxier.service from internal/install
+    cmds:
+      - go run ./internal/install/gen/main.go
+
+  version:
+    desc: Print the version that builds will embed
+    silent: true
+    cmds:
+      - echo {{.VERSION}}
+
+  clean:
+    desc: Remove build outputs (keeps ./data)
+    cmds:
+      - rm -rf {{.OUT_DIR}} dist build {{.BIN}} {{.BIN}}.exe

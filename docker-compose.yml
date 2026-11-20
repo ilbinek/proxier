@@ -1,0 +1,29 @@
+# proxier with Docker Compose.
+#
+# Host networking is required: rules (and port ranges) are created at runtime
+# from the web UI, so they can't be listed in a `ports:` section ahead of time.
+# Host networking only works on Linux hosts.
+#
+#   docker compose up -d
+#   docker compose logs proxier | grep -i "setup token"
+services:
+  proxier:
+    build: .
+    # Or use a published image instead of building:
+    # image: ghcr.io/ilbinek/proxier:latest
+    container_name: proxier
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PROXIER_LISTEN: ":8080"
+      PROXIER_TLS: "self-signed"           # off | self-signed | acme | files
+      # PROXIER_ACME_DOMAIN: proxy.example.com
+      # PROXIER_ACME_EMAIL: you@example.com
+      # PROXIER_TRUST_PROXY: "true"        # only behind your own reverse proxy
+    volumes:
+      - proxier-data:/data
+    # The image runs as a non-root user. To forward ports below 1024, uncomment:
+    # user: "0"
+
+volumes:
+  proxier-data:

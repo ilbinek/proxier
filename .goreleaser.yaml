@@ -1,0 +1,68 @@
+# GoReleaser config: https://goreleaser.com
+# Local dry run: task release:snapshot   (archives land in dist/)
+version: 2
+project_name: proxier
+
+before:
+  hooks:
+    - pnpm --dir web install --frozen-lockfile
+    - pnpm --dir web build
+
+builds:
+  - id: proxier
+    main: ./cmd/proxier
+    binary: proxier
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      - { goos: windows, goarch: arm }
+      - { goos: darwin, goarch: arm }
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: proxier
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # e.g. proxier_1.2.0_linux_amd64.tar.gz, proxier_1.2.0_linux_armv7.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    files:
+      - README.md
+      - deploy/proxier.service
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]
+
+release:
+  prerelease: auto
+  extra_files:
+    - glob: scripts/install.sh
+  footer: |
+    ## Install
+
+    **Linux server (systemd)**, installs or upgrades in place:
+
+    ```sh
+    curl -fsSL https://github.com/ilbinek/proxier/releases/latest/download/install.sh | sudo sh
+    sudo cat /var/lib/proxier/setup-token.txt
+    ```
+
+    Pin this exact version with `| sudo PROXIER_VERSION={{ .Tag }} sh`.
+
+    **Docker:** `docker pull ghcr.io/ilbinek/proxier:{{ .Version }}`
+
+    **Windows / macOS:** download the archive for your system below and run `proxier serve`.

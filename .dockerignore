@@ -1,0 +1,10 @@
+.git
+data
+dist
+bin
+build
+proxier
+proxier.exe
+web/node_modules
+web/dist
+.task
